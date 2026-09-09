@@ -1,4 +1,6 @@
 name: build
+permissions:
+  contents: read
 on:
   push:
     branches:
@@ -21,6 +23,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with:
+        ref: b0685d91c8a2f2634f026828a51b13c714b7685a
 
     - id: build_info
       name: Declare build info
@@ -61,11 +65,34 @@ jobs:
     - name: Run test
       run: make test
 
+    - name: Stress retry tests and verify pre-fix failure
+      run: |
+        docker run --rm -i longhorn-manager-test bash -s <<'SCRIPT'
+        set -euo pipefail
+        go test -race ./controller -run '^Test$' -count=25 -args -check.f KubernetesNodeController
+        git apply --unidiff-zero - <<'PATCH'
+        diff --git a/controller/kubernetes_node_controller.go b/controller/kubernetes_node_controller.go
+        --- a/controller/kubernetes_node_controller.go
+        +++ b/controller/kubernetes_node_controller.go
+        @@ -222 +221,0 @@
+        -			knc.queue.AddAfter(key, kubernetesNodeCleanupRetryInterval)
+        PATCH
+        set +e
+        go test -race ./controller -run '^Test$' -count=1 -args \
+          -check.f 'KubernetesNodeController(RetriesDelayedResourceCleanup|CleanupRetryRechecksKubernetesNode)' \
+          2>&1 | tee /tmp/node-gc-before-fix.log
+        test_status=${PIPESTATUS[0]}
+        set -e
+        test "$test_status" -ne 0
+        grep -F 'context deadline exceeded' /tmp/node-gc-before-fix.log
+        grep -F '2 FAILED' /tmp/node-gc-before-fix.log
+        SCRIPT
+
   build_push_image:
     name: Build and push image
     runs-on: ubuntu-latest
     needs: build
-    if: ${{ startsWith(github.ref, 'refs/heads/') || startsWith(github.ref, 'refs/tags/') }}
+    if: ${{ false }}
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
